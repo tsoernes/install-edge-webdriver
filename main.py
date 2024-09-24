@@ -1,3 +1,5 @@
+import argparse
+import logging
 import os
 import re
 import shutil
@@ -8,13 +10,21 @@ from zipfile import ZipFile
 
 import requests
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 
 def get_edge_version() -> Optional[str]:
-    result = os.popen("microsoft-edge --version").read().strip()
-    match = re.search(r"(\d+\.\d+\.\d+\.\d+)", result)
-    if match:
-        version = match.group(1)
-        return version
+    try:
+        result = os.popen("microsoft-edge --version").read().strip()
+        match = re.search(r"(\d+\.\d+\.\d+\.\d+)", result)
+        if match:
+            version = match.group(1)
+            return version
+    except Exception as e:
+        logging.error(f"Error getting Edge version: {e}")
     return None
 
 
@@ -22,48 +32,59 @@ def download_webdriver(version: str) -> bool:
     webdriver_url = (
         f"https://msedgedriver.azureedge.net/{version}/edgedriver_linux64.zip"
     )
-    response = requests.get(webdriver_url)
-    if response.status_code == 200:
+    try:
+        response = requests.get(webdriver_url)
+        response.raise_for_status()
         with open("edgedriver_linux64.zip", "wb") as file:
             file.write(response.content)
         return True
+    except requests.RequestException as e:
+        logging.error(f"Error downloading WebDriver: {e}")
     return False
 
 
 def install_webdriver(install_dir: Path, version: str) -> None:
-    with ZipFile("edgedriver_linux64.zip", "r") as zip_ref:
-        zip_ref.extractall("/tmp/")
-    os.chmod("/tmp/msedgedriver", 0o755)
+    try:
+        with ZipFile("edgedriver_linux64.zip", "r") as zip_ref:
+            zip_ref.extractall("/tmp/")
+        os.chmod("/tmp/msedgedriver", 0o755)
 
-    # Create the install directory if it does not exist
-    install_dir.mkdir(parents=True, exist_ok=True)
+        # Create the install directory if it does not exist
+        install_dir.mkdir(parents=True, exist_ok=True)
 
-    # Move the WebDriver to the install directory with version in the name
-    target_path = install_dir / f"msedgedriver_{version}"
-    shutil.move("/tmp/msedgedriver", target_path)
+        # Move the WebDriver to the install directory with version in the name
+        target_path = install_dir / f"msedgedriver_{version}"
+        shutil.move("/tmp/msedgedriver", target_path)
 
-    # Create a symlink named "msedgedriver" pointing to the versioned WebDriver
-    symlink_path = install_dir / "msedgedriver"
-    if symlink_path.exists():
-        symlink_path.unlink()
-    symlink_path.symlink_to(target_path)
+        # Create a symlink named "msedgedriver" pointing to the versioned WebDriver
+        symlink_path = install_dir / "msedgedriver"
+        if symlink_path.exists():
+            symlink_path.unlink()
+        symlink_path.symlink_to(target_path)
 
-    os.remove("edgedriver_linux64.zip")
+        os.remove("edgedriver_linux64.zip")
 
-    print(f"Symlink created at: {symlink_path}")
+        logging.info(f"Symlink created at: {symlink_path}")
+    except Exception as e:
+        logging.error(f"Error installing WebDriver: {e}")
 
 
 def get_available_versions() -> List[str]:
     url = "https://msedgewebdriverstorage.blob.core.windows.net/edgewebdriver?delimiter=%2F&maxresults=100000&restype=container&comp=list&_=1727162272993&timeout=60000"
-    response = requests.get(url)
-    content = response.content.decode("utf-8-sig")  # Decode with BOM handling
-    root = ET.fromstring(content)
-    versions = [
-        prefix.find("Name").text.strip("/")
-        for prefix in root.findall(".//BlobPrefix")
-        if prefix.find("Name") is not None
-    ]
-    return versions
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        content = response.content.decode("utf-8-sig")  # Decode with BOM handling
+        root = ET.fromstring(content)
+        versions = [
+            prefix.find("Name").text.strip("/")
+            for prefix in root.findall(".//BlobPrefix")
+            if prefix.find("Name") is not None
+        ]
+        return versions
+    except requests.RequestException as e:
+        logging.error(f"Error fetching available versions: {e}")
+    return []
 
 
 def install_edge_webdriver(install_dir: Path = Path.home() / "bin") -> None:
@@ -73,11 +94,13 @@ def install_edge_webdriver(install_dir: Path = Path.home() / "bin") -> None:
 
     edge_version = get_edge_version()
     if not edge_version:
-        print("Microsoft Edge is not installed or the version could not be determined.")
+        logging.error(
+            "Microsoft Edge is not installed or the version could not be determined."
+        )
         exit(1)
 
-    print(f"Detected Microsoft Edge version: {edge_version}")
-    print("Downloading matching Edge WebDriver...")
+    logging.info(f"Detected Microsoft Edge version: {edge_version}")
+    logging.info("Downloading matching Edge WebDriver...")
 
     available_versions = get_available_versions()
     if edge_version in available_versions:
@@ -87,16 +110,24 @@ def install_edge_webdriver(install_dir: Path = Path.home() / "bin") -> None:
 
     for version in available_versions[start_index:]:
         if download_webdriver(version):
-            print(f"Downloaded Edge WebDriver version: {version}")
-            print("Installing Edge WebDriver...")
+            logging.info(f"Downloaded Edge WebDriver version: {version}")
+            logging.info("Installing Edge WebDriver...")
             install_webdriver(install_dir, version)
-            print("Edge WebDriver installed successfully!")
+            logging.info("Edge WebDriver installed successfully!")
             break
     else:
-        print(
+        logging.error(
             "Failed to download and install Edge WebDriver. Please check the available versions and try again."
         )
 
 
 if __name__ == "__main__":
-    install_edge_webdriver()
+    parser = argparse.ArgumentParser(description="Install Microsoft Edge WebDriver.")
+    parser.add_argument(
+        "--install-dir",
+        type=Path,
+        default=Path.home() / "bin",
+        help="Directory to install the WebDriver",
+    )
+    args = parser.parse_args()
+    install_edge_webdriver(args.install_dir)
